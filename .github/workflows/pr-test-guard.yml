@@ -40,14 +40,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The guard diffs against the base branch, so it needs real history.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Check that changed code has tests
         run: |
-          base="origin/${{ github.base_ref }}"
+          base="origin/${GITHUB_BASE_REF}"
           git rev-parse --verify --quiet "$base" >/dev/null || {
             echo "::error::Cannot resolve base ref '$base'."
             exit 1
