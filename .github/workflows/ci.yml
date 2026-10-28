@@ -215,18 +215,12 @@ jobs:
     # that does not exist in the repo — every `docker build` failed from that
     # merge until it was reverted, and no check noticed.
     #
-    # Build only; the image is not pushed anywhere.
+    # This job builds and smoke-tests locally. The publish job below handles
+    # registry pushes after every CI check passes.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      # Registers binfmt handlers so the arm64 runtime stage can run its apk
-      # and adduser steps on an amd64 runner. The build stages cross-compile
-      # and need none of this, but stage 3 must BE the target architecture, so
-      # without QEMU the arm64 leg dies at `apk add` with "exec format error".
-      # ubuntu-latest ships no qemu-user-static and BuildKit does not bundle it.
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -240,27 +234,6 @@ jobs:
           # it buildx leaves the image in its own cache and `docker run` fails.
           load: true
           tags: ghd:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # The smoke test above only ever runs the runner's own architecture. The
-      # release is multi-arch, and the way that breaks is asymmetric: the build
-      # succeeds and the image dies with "exec format error" on the platform
-      # nobody tested. Cross-building every target here catches a Dockerfile
-      # that only cross-compiles correctly for amd64.
-      #
-      # No `load:` — a multi-platform result cannot be loaded into the local
-      # docker image store, and there is nothing to run anyway on a runner that
-      # is not those architectures. The Dockerfile asserts its own GOARCH
-      # internally, so a wrong-architecture binary fails the build rather than
-      # producing an image that merely looks fine.
-      - name: Cross-build every released platform
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: backend/Dockerfile
-          push: false
-          platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -522,3 +495,41 @@ jobs:
         run: |
           docker rm -f ghd-ci-app ghd-ci-db ghd-ci-example >/dev/null 2>&1 || true
           docker network rm ghd-ci >/dev/null 2>&1 || true
+
+  publish:
+    name: Publish Docker image to GHCR
+    runs-on: ubuntu-latest
+    needs: [backend, formatting, image]
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Set image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build and push amd64 image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ github.ref_name }}
+            ${{ steps.image.outputs.name }}:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
